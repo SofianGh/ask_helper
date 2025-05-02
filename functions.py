@@ -77,31 +77,28 @@ def convert_data_to_df(separator: str, data: str, debug: bool = False) -> pd.Dat
 def indentify_file_type(data: pd.DataFrame, debug: bool = False) -> str:
     # Check number of columns
     ncols = len(data.columns)
+    if ncols < 6:
+        raise ValueError(f"DataFrame has only {ncols} columns. Not enough to identify file type.")
+    
     file_type_est = {"RFH": 0, "RHC": 0, "PTOI": 0, "PTOC": 0, "NTO": 0}
+
 
     if ncols == 9:
         file_type_est["RFH"] += 10
-        logg.log_to_file(
-            heading="IDENTIFY FILE TYPE",
-            data_changes=["File identified as: RFH"],
-        )
-
-        print("File identified as: RFH")
-        return "RFH"
-    elif ncols <= 12:
-        file_type_est["RFH"] += 2
     elif ncols == 13:
-        file_type_est["RFH"] += 10
+        file_type_est["NTO"] += 5  
     elif ncols == 17:
         file_type_est["RHC"] += 10
         file_type_est["PTOI"] += 10
-    elif ncols <= 20:
-        file_type_est["RHC"] += 2
-        file_type_est["PTOI"] += 2
     elif ncols == 27:
         file_type_est["PTOC"] += 10
-    elif ncols <= 30:
-        file_type_est["PTOC"] += 2
+
+    columns_set = set(data.columns)
+
+    if set(headers.RFH_header) == columns_set:
+        file_type_est["RFH"] += 20  
+    if set(headers.NTO_header) == columns_set:
+        file_type_est["NTO"] += 20  
 
     # check if numeric in col 10 (ANTALL_ANDELER)
 
@@ -121,13 +118,13 @@ def indentify_file_type(data: pd.DataFrame, debug: bool = False) -> str:
             isin_rfh += 1
 
         if (
-            len(row[data.columns[11]]) == 12
+            ncols > 11 and len(row[data.columns[11]]) == 12
             and str(row[data.columns[11]][:2]).isalpha()
         ):
             isin_ptoi += 1
 
         if (
-            len(row[data.columns[10]]) == 12
+            ncols > 10 and len(row[data.columns[10]]) == 12
             and str(row[data.columns[10]][:2]).isalpha()
         ):
             isin_ptoc += 1
@@ -142,10 +139,10 @@ def indentify_file_type(data: pd.DataFrame, debug: bool = False) -> str:
         ):
             units_rhc += 1
 
-        if len(row[data.columns[7]]) == 3:
+        if ncols > 7 and len(row[data.columns[7]]) == 3:
             currency_rfh += 1
 
-        if len(row[data.columns[12]]) == 3:
+        if ncols > 12 and len(row[data.columns[12]]) == 3:
             currency_ptoi += 1
 
     if currency_rfh >= len(data) * 2 / 3 and currency_rfh >= currency_ptoi:
@@ -193,15 +190,15 @@ def indentify_file_type(data: pd.DataFrame, debug: bool = False) -> str:
 def update_header(data: pd.DataFrame, file_type: str) -> pd.DataFrame:
     match file_type:
         case "RFH":
-            header = headers.rfh_header
+            header = headers.RFH_header
         case "RHC":
-            header = headers.rhc_header
+            header = headers.RHC_header
         case "PTOI":
-            header = headers.ptoi_header
+            header = headers.PTOI_header
         case "PTOC":
-            header = headers.ptoc_header
+            header = headers.PTOC_header
         case "NTO":
-            header = headers.nto_header
+            header = headers.NTO_header
 
     if len(data.columns) == len(header):
         logg.log_to_file(
@@ -237,31 +234,31 @@ def pad_customer_number(data: pd.DataFrame) -> None:
     )
 
 
-def convert_distributor(data: pd.DataFrame, file_type: str) -> None:
-    # Convert dict keys to uppercase
-    dist_dict = {
-        key.upper(): value for key, value in conversion_data.distributors.items()
-    }
-
+def convert_distributor(data: pd.DataFrame, file_type: str) -> None: 
     logg_msg = []
+    if file_type.upper() in {"RFH", "RHC", "PTOI", "PTOC"}:
+        dist_dict = {
+            key.upper(): value for key, value in conversion_data.distributors.items()
+        }
+        cols_conv = [0, 1]
+    elif file_type.upper() == "NTO":
+        dist_dict = {
+            key.upper(): value for key, value in conversion_data.NTO_distributors.items()
+        }
+        cols_conv = [1, 4]
 
     for index, row in data.iterrows():
-        # Fix AVLEVERENDE_PART name
-        distributor_key = str(row.iloc[1]).upper()
-        if distributor_key in dist_dict.keys():
-            logg_msg.append(
-                f"{index +1} [{data.columns[1]}] {row.iloc[1]} -> {dist_dict[distributor_key]}"
-            )
-            row.iloc[1] = dist_dict[distributor_key]
+        for col in cols_conv:
+            orig_val = str(row.iloc[col]).upper()
+            if orig_val in dist_dict:
+                logg_msg.append(
+                    f"{index +1} [{data.columns[col]}] {row.iloc[col]} -> {dist_dict[orig_val]}"
+                )
+                row.iloc[col] = dist_dict[orig_val]
 
-        # Fix MOTTAKENDE_PART_(TILBYDER) name
-        distributor_key = str(row.iloc[0]).upper()
-        if distributor_key in dist_dict.keys():
-            logg_msg.append(
-                f"{index +1} [{data.columns[0]}] {row.iloc[0]} -> {dist_dict[distributor_key]}"
-            )
-            row.iloc[0] = dist_dict[distributor_key]
-
+    for col in cols_conv:
+        data.iloc[:, col] = data.iloc[:, col].str.upper()
+    
     logg.log_to_file(
         heading="CONVERT DISTRIBUTOR",
         change_text="Converted distributor on row: ",
@@ -321,7 +318,6 @@ def update_tax_indetifier(data: pd.DataFrame) -> None:
 
 def update_cash_identifier(data: pd.DataFrame) -> None:
     logg_msg = []
-
     for index, row in data.iterrows():
         verdipapirnavn = str(row["VERDIPAPIRNAVN"]).strip()
         if verdipapirnavn.upper().startswith("CASH") and verdipapirnavn != "Cash":
@@ -414,12 +410,15 @@ def convert_to_numeric(data: pd.DataFrame, file_type: str) -> pd.DataFrame:
     logg_msg = []
     columns_to_convert = []
     match file_type:
+        case "NTO":
+            columns_to_convert = ["ANTALL_ANDELER"]
         case "RHC":
             columns_to_convert = ["ANTALL_ANDELER", "VERDI"]
         case "PTOC":
             columns_to_convert = [
                 "ANTALL_FLYTTET",
                 "KOSTPRIS_PR_ISIN",
+                "FLYTTET_KONTANTER",
                 "FLYTTET_KOSTPRIS_ASK",
                 "MINSTE_INNSKUDD_HIA",
                 "UBENYTTET_SKJERMING_31.12",
@@ -433,7 +432,7 @@ def convert_to_numeric(data: pd.DataFrame, file_type: str) -> pd.DataFrame:
 
     for index, row in data.iterrows():
         for field in columns_to_convert:
-            data[field] = data[field].str.strip().str.replace(" ", "")
+            data[field] = data[field].str.strip().str.replace(r'\s+', '', regex=True)
             comma = row[field].find(",")
             period = row[field].find(".")
 
@@ -523,3 +522,124 @@ def group_same_fund(
     )
 
     return data
+
+
+def add_distributor(data: pd.DataFrame, file_type: str) -> None:
+    logg_msg = []
+
+    data.iloc[:, 0] = data.iloc[:, 0].astype(str).str.strip()
+    data.iloc[:, 1] = data.iloc[:, 1].astype(str).str.strip()
+
+    for mtr, mtr_rows in data.groupby("MASTERTRANSFERREF_(FULLMAKTSNR)"):
+        mottakende = set(mtr_rows.iloc[:, 0].dropna()) - {""}
+        avleverende = set(mtr_rows.iloc[:, 1].dropna()) - {""}
+
+        if len(mottakende) > 1 or len(avleverende) > 1:
+            msg = f"Error: More than one distributor for {mtr}. Could not fill empty distributor for this MTR"
+            print(Fore.RED + "!!! - " + msg + Style.RESET_ALL)
+            logg_msg.append(msg)
+            raise Exception(msg)
+
+        if not mottakende or not avleverende:
+            msg = f"Warning: No distributor found for {mtr}. Could not fill empty distributor for this MTR."
+            print(Fore.RED + "!!! - " + msg + Style.RESET_ALL)
+            logg_msg.append(msg)
+            raise Exception(msg)
+
+        for index, value in [(0, next(iter(mottakende))), (1, next(iter(avleverende)))]:
+            mask = (data["MASTERTRANSFERREF_(FULLMAKTSNR)"] == mtr) & (data.iloc[:, index] == "")
+            if mask.any():
+                data.loc[mask, data.columns[index]] = value
+                for row in data.index[mask]:
+                    logg_msg.append(f"{row+1} [{data.columns[index]}] Empty -> {value}")
+
+        logg.log_to_file(
+            heading="ADD DISTRIBUTOR",
+            change_text="Added distributor on row: ",
+            data_changes=logg_msg,
+        )
+
+
+def remove_duplicate(data: pd.DataFrame) -> pd.DataFrame:
+    logg_msg = []
+    duplicate_rows = data[data.duplicated(keep='first')]
+    data.drop_duplicates(inplace=True)
+    
+    if not duplicate_rows.empty:
+        for index, row in duplicate_rows.iterrows():
+            row_values = ', '.join(str(value) for value in row.values)
+            logg_msg.append(f"{index+1} {row_values}")
+
+        error_msg = f"Warning: Removed a duplicate row, please verify."
+        print(Fore.RED + "!!! - " + error_msg + Style.RESET_ALL)
+
+        logg.log_to_file(
+            heading="REMOVE DUPLICATES",
+            change_text="Removed duplicate on row: ",
+            data_changes=logg_msg,
+        )
+    
+    return data
+
+
+def remove_negative_cash(data: pd.DataFrame) -> None:
+    logg_msg = []
+    for index, row in data.iterrows():
+        if row["VERDI"].startswith("-") and row["FEILKODE"]=="G" and row["VERDIPAPIRNAVN"].upper()=="CASH":
+            logg_msg.append(
+                f"{index+1} [{row['VERDI']}] -> 0"
+            )
+            row["VERDI"] = "0"
+
+    logg.log_to_file(
+        heading="REMOVE NEGATIVE CASH",
+        change_text="Changed negative cash on row: ",
+        data_changes=logg_msg,
+    )
+
+
+def move_misplaced_accountno(data: pd.DataFrame) -> None:
+    logg_msg=[]
+    mask = (
+        data.apply(lambda r: str(r["VERDIPAPIRNAVN"]).startswith(str(r["MOTTAKENDE_TILBYDER"])), axis=1) &
+        (data["SELG_ALLE_ANDELER"] == "N") &
+        (data["TIL_KONTO_NOMINEE_TILBYDER"].str.strip() == "") & 
+        (data["TIL_ASK_KONTO_KUNDE_TILBYDER"]!="")
+    )
+
+    row = data.index[mask]
+    for index in row:
+        logg_msg.append(
+        f"{index+1} from TIL_ASK_KONTO_KUNDE_TILBYDER -> TIL_KONTO_NOMINEE_TILBYDER"
+        )
+    data.loc[mask, "TIL_KONTO_NOMINEE_TILBYDER"] = data.loc[mask, "TIL_ASK_KONTO_KUNDE_TILBYDER"]
+    data.loc[mask, "TIL_ASK_KONTO_KUNDE_TILBYDER"] = ""
+    
+    logg.log_to_file(
+        heading="MOVED MISPLACED ACCOUNT NUMBER",
+        change_text="Moved misplaced account number on row: ",
+        data_changes=logg_msg,
+    )
+
+def fix_sell_cash(data: pd.DataFrame) ->None:
+    logg_msg=[]
+
+    selg_column = "SELG_ALLE_ANDELER" if "SELG_ALLE_ANDELER" in data.columns else "SELG_ANDELER"
+    
+    for index, row in data.iterrows():
+        if row[selg_column].strip() == "" and row["VERDIPAPIRNAVN"].upper() == "CASH":
+            logg_msg.append(
+                f"{index+1} [{row[selg_column]}] -> N"
+            )
+            row[selg_column] = "N"
+        if row["STOPP_SPAREAVTALE"].strip() =="":
+            logg_msg.append(
+                f"{index+1} [{row["STOPP_SPAREAVTALE"]}] -> J"
+            )
+            row["STOPP_SPAREAVTALE"] = "J"
+
+    logg.log_to_file(
+        heading="FIX J/N ON SELL ALL UNITS AND STOP AGREEMENT",
+        change_text="Added J/N to row : ",
+        data_changes=logg_msg,
+    )
